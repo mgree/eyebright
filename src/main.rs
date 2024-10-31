@@ -1,57 +1,78 @@
 use std::io::{Read, Write};
 
-use clap::{Arg, Command};
-
-const VERSION: &'static str = "v1";
 const PATH_BRIGHTNESS: &'static str = "/sys/class/backlight/intel_backlight/brightness";
 const PATH_MAX_BRIGHTNESS: &'static str = "/sys/class/backlight/intel_backlight/max_brightness";
 
 fn main() {
-    let argv0 = std::env::args().next().expect("argv[0]");
-    let m = Command::new("eyebright")
-        .author("Michael Greenberg <michael@greenberg.science>")
-        .version(VERSION)
-        .about("Manage backlight brightness on Intel displays")
-        .arg(
-            Arg::new("action")
-                .required(false)
-                .default_value("")
-                .help("\n+10, -5%\trelative percentage change\n50, 75%\tabsolute percentage\n\nleave blank to get current brightness")
-        )
-        .get_matches();
+    let args = std::env::args().collect::<Vec<_>>();
+    let argv0 = &args[0];
 
-    if let Err(e) = execute(&argv0, m) {
+    if args.len() > 2 {
+        usage(argv0);
+    }
+
+    let action = match args.get(1) {
+        Some(action) => {
+            if action == "--help" || action == "-h" {
+                usage(argv0);
+            }
+
+            match str::parse(action) {
+                Ok(action) => action,
+                Err(e) => {
+                    eprintln!("{argv0}: {e}");
+                    usage(argv0);
+                }
+            }
+        }
+        None => Action::Get,
+    };
+
+    if let Err(e) = action.execute() {
         eprintln!("{argv0}: {e}");
         std::process::exit(1);
     }
 }
 
-fn execute(argv0: &str, m: clap::ArgMatches) -> Result<(), Error> {
-    let action = str::parse::<Action>(m.get_one::<String>("action").unwrap_or(&"".to_string()))?;
+fn usage(argv0: &str) -> ! {
+    eprintln!(
+        "Usage: {argv0} [ACTION]
 
-    // everybody needs this, so let's do it in advance
-    let max_brightness = read_file_as_u32(PATH_MAX_BRIGHTNESS)?;
+  ACTION can be:
+    +N           increases brightness by N%
+    -N           decreases brightness by N%
+    N            set brightness to N%
+  if no ACTION is given, displays the current brightness level
+  any number N may optionally have a % sign after it"
+    );
 
-    let new_percentage = action.run(max_brightness, || read_file_as_u32(PATH_BRIGHTNESS))?;
-
-    if let Some(percentage) = new_percentage {
-        let clamped_percentage = percentage.clamp(0.0, 1.0);
-        if clamped_percentage != percentage {
-            eprintln!("{argv0}: {percentage} was out of range, clamped to {clamped_percentage}",)
-        }
-
-        let new_value = (f64::from(max_brightness) * percentage).round() as u32;
-
-        write_file_from_u32(PATH_BRIGHTNESS, new_value)?;
-    }
-
-    Ok(())
+    std::process::exit(2);
 }
 
-/// Runs `action`, given the `max_brightness` and a function to get the current brightness
-/// The `Option<f64>` is the new percentage of `max_brightness` to apply.
 impl Action {
-    fn run<F>(self, max_brightness: u32, get_brightness: F) -> Result<Option<f64>, Error>
+    /// Executes an action on the system.
+    fn execute(self) -> Result<(), Error> {
+        let max_brightness = read_file_as_u32(PATH_MAX_BRIGHTNESS)?;
+
+        if let Some(percentage) =
+            self.calculate_new_percentage(max_brightness, || read_file_as_u32(PATH_BRIGHTNESS))?
+        {
+            let percentage = percentage.clamp(0.0, 1.0);
+            let new_value = (f64::from(max_brightness) * percentage).round() as u32;
+
+            write_file_from_u32(PATH_BRIGHTNESS, new_value)?;
+        }
+
+        Ok(())
+    }
+
+    /// Calculates the new percentage of the maximum brightness `action`, given the `max_brightness` and a function to get the current brightness (to allow for testing).
+    /// The `Option<f64>` is the new percentage of `max_brightness` to apply; it should be in the range `0.0..=1.0``.
+    fn calculate_new_percentage<F>(
+        self,
+        max_brightness: u32,
+        get_brightness: F,
+    ) -> Result<Option<f64>, Error>
     where
         F: FnOnce() -> Result<u32, Error>,
     {
@@ -68,9 +89,9 @@ impl Action {
                 let brightness = get_brightness()?;
 
                 let current = f64::from(brightness) / f64::from(max_brightness);
-                let delta = -1.0 * f64::from(change) / 100.0;
+                let delta = f64::from(change) / 100.0;
 
-                Ok(Some(current + delta))
+                Ok(Some(current - delta))
             }
             Action::Set(percentage, SetMode::Absolute) => Ok(Some(f64::from(percentage) / 100.0)),
             Action::Get => {
@@ -293,7 +314,7 @@ mod test {
         assert_eq!(cases.len(), 10504);
 
         for (brightness, action, expected) in cases {
-            match action.run(max_brightness, || Ok(brightness)) {
+            match action.calculate_new_percentage(max_brightness, || Ok(brightness)) {
                 Err(e) => panic!("expected {expected:?} from {action:?} on {brightness}/{max_brightness}, got error {e:?}"),
                 Ok(got) => {
                     let new_brightness = match got {
