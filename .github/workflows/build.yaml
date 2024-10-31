@@ -1,0 +1,47 @@
+name: Main workflow
+
+on:
+  pull_request:
+  push:
+  schedule:
+    - cron: '4 11 * * *'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build eyebright and run unit tests
+        run: |
+          cargo build --verbose --all --release
+          cargo test
+
+      - name: Upload release build
+        uses: actions/upload-artifact@v4
+        with:
+          name: eyebright
+          path: |
+              target/release/eyebright
+
+  prerelease:
+    needs: build
+    runs-on: ubuntu-latest
+    if: ${{ github.ref == 'refs/heads/main' }}
+      
+    steps:
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+  
+      - name: Deploy 'latest' release
+        uses: "marvinpinto/action-automatic-releases@latest"
+        with:
+          repo_token: "${{ secrets.GITHUB_TOKEN }}"
+          automatic_release_tag: "latest"
+          prerelease: true
+          title: "Latest development build"
+          files: |
+            eyebright/eyebright
+        

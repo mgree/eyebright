@@ -1,6 +1,9 @@
 [package]
 name = "eyebright"
-version = "0.1.0"
+authors = ["Michael Greenberg <michael@greenberg.science>"]
+description = "Manage backlight brightness on Intel displays"
+license = "GPL-3.0"
+version = "1.0.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
